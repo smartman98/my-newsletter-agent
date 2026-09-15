@@ -5,3 +5,5 @@ trafilatura
 pyyaml
 anyio
 claude-agent-sdk
+fastapi
+uvicorn
