@@ -1,0 +1,7 @@
+langgraph
+feedparser
+requests
+trafilatura
+pyyaml
+anyio
+claude-agent-sdk
