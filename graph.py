@@ -29,14 +29,17 @@ BASE_DIR = Path(__file__).resolve().parent
 UA = {"User-Agent": "Mozilla/5.0 (my-newsletter-agent)"}
 
 # ---------- 설정: 소스 ----------
-# 채택 기준·탈락 사유는 REPORT.md의 "소스 채택표" 참고 — 6곳을 실제로 재보고
-# (_measure_sources.py) 4곳을 채택, 1곳(CNBC Markets, 24시간 내 신규글 1건뿐)을
-# G2(생존) 기준 미달로 제외했다.
+# 채택 기준·근거는 REPORT.md의 "소스 채택표" 참고. CNBC Markets는 처음엔 "24시간 내
+# 신규글 1건뿐"이라는 이유로 뺐었는데, 그 컷오프(1건 미만=탈락)가 근거 없이 임의로
+# 정한 숫자라는 지적을 받고(2026-09-15), G1(본문)만 통과하면 일단 넣고 선별 단계의
+# 자연스러운 경쟁에 맡기는 쪽으로 방침을 바꿨다 — 실제로 CNBC를 넣고 돌려봐도 최종
+# 선택엔 한 번도 안 뽑혀서, 소스 단계에서 미리 막을 필요가 없다는 게 실험으로 확인됨.
 SOURCES = [
     ("한국경제", "https://www.hankyung.com/feed/finance"),
     ("연합뉴스 경제", "https://www.yna.co.kr/rss/economy.xml"),
     ("Investing.com", "https://www.investing.com/rss/news_25.rss"),
     ("Yahoo Finance", "https://finance.yahoo.com/news/rssindex"),
+    ("CNBC Markets", "https://www.cnbc.com/id/20910258/device/rss/rss.html"),
 ]
 
 # ---------- 설정: 파이프라인 상수 ----------
@@ -78,7 +81,7 @@ def _cli_path() -> str | None:
     return str(default) if default.exists() else None
 
 
-async def ask_claude(system_prompt: str, user_prompt: str, max_turns: int = 1) -> str:
+async def ask_claude(system_prompt: str, user_prompt: str, max_turns: int = 3) -> str:
     options = ClaudeAgentOptions(
         cli_path=_cli_path(),
         system_prompt=system_prompt,
@@ -87,11 +90,17 @@ async def ask_claude(system_prompt: str, user_prompt: str, max_turns: int = 1) -
         max_turns=max_turns,
     )
     text_out = ""
-    async for message in query(prompt=user_prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    text_out = block.text
+    try:
+        async for message in query(prompt=user_prompt, options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        text_out = block.text
+    except Exception as exc:  # noqa: BLE001
+        # 한 번의 호출 실패(턴 초과 등)로 파이프라인 전체가 죽으면 안 된다 — 소스
+        # 하나가 죽어도 나머지는 모이게 한 ①수집 노드의 원칙과 같다. 빈 문자열을
+        # 돌려주면 호출한 쪽의 JSON 파싱 실패 처리 경로가 그대로 안전하게 작동한다.
+        return f"[ask_claude 실패: {exc}]"
     return text_out
 
 
@@ -184,7 +193,12 @@ async def _final_pick(shortlisted: list[dict]) -> list[dict]:
         '[{"idx": 0, "event": "연준 금리동결", "reason": "..."}]'
     )
     text = await ask_claude(system, listing)
-    picks = extract_json(text)
+    try:
+        picks = extract_json(text)
+    except Exception:  # noqa: BLE001
+        # 본선 파싱이 실패해도 파이프라인이 죽으면 안 된다 — 예선 통과분 앞에서부터
+        # 안전하게 채운다(이벤트 라벨이 없으니 뒤에서 event 중복 제거는 자연히 스킵됨).
+        picks = [{"idx": i, "event": f"unlabeled-{i}", "reason": "본선 파싱 실패, 안전 대체"} for i in range(min(FINAL_PICKS, len(shortlisted)))]
     out = []
     for p in picks:
         i = p.get("idx")
