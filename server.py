@@ -21,7 +21,7 @@ async def index():
     return (
         "증시 뉴스 다이제스트 에이전트 — 피어리뷰용 실행기\n\n"
         "GET  /healthz          살아있는지 확인\n"
-        "POST /run?token=...    실제로 파이프라인을 한 번 돌린다(1~2분 걸림)\n"
+        "GET|POST /run?token=... 실제로 파이프라인을 한 번 돌린다(1~2분 걸림, 브라우저로 링크만 눌러도 됨)\n"
         "                       ?hours=6 으로 수집 시간 창을 줄일 수 있다(기본 24)\n"
         "                       ?publish=1 을 붙이면 디스코드로 실제 발행한다(기본은 dry-run)\n"
     )
@@ -32,7 +32,7 @@ async def healthz():
     return {"ok": True}
 
 
-@app.post("/run")
+@app.api_route("/run", methods=["GET", "POST"])
 async def run_pipeline(
     token: str = Query(...),
     hours: int = Query(24, ge=1, le=168),
