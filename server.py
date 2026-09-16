@@ -5,9 +5,13 @@
 /run에는 URL에 붙이는 짧은 토큰(REVIEW_TOKEN) 하나만 요구한다 — "로그인"이
 아니라 그냥 공유 링크에 붙는 열쇠다.
 
-/run은 파이프라인을 백그라운드로 시작만 하고 바로 결과 확인 페이지로
-넘긴다(원래는 끝날 때까지 붙잡고 있었는데, Render 무료 플랜이 1분 안팎에서
-연결을 끊어버려 "헛바퀴"처럼 보이는 502가 발생했음 — 2026-09-15 확인).
+/run(GET)은 바로 실행하지 않고 "실행하기" 버튼이 있는 화면을 보여준다(2026-09-16
+사용자 요청 — 링크 열자마자 자동으로 실행되는 게 아니라, 버튼을 눌러야 시작되게).
+버튼을 누르면(POST) 파이프라인을 백그라운드로 시작만 하고 바로 결과 확인
+페이지로 넘긴다(원래는 끝날 때까지 응답을 붙잡고 있었는데, Render 무료 플랜이
+1분 안팎에서 연결을 끊어버려 "헛바퀴"처럼 보이는 502가 발생했음 — 2026-09-15
+확인). 결과 확인 페이지는 완료되면 최종 선택된 기사의 제목·요약·인사이트를
+그대로 보여준다.
 """
 
 import asyncio
@@ -15,7 +19,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Form, HTTPException, Query
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
 from graph import build
@@ -23,6 +27,9 @@ from graph import build
 app = FastAPI(title="증시 뉴스 다이제스트 — 피어리뷰용 실행기")
 
 JOBS: dict[str, dict] = {}
+
+PAGE_HEAD = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'></head>"
+BODY_STYLE = "font-family:sans-serif;max-width:640px;margin:40px auto;padding:0 16px;line-height:1.6"
 
 
 def _check_token(token: str) -> None:
@@ -36,8 +43,7 @@ async def index():
     return (
         "증시 뉴스 다이제스트 에이전트 — 피어리뷰용 실행기\n\n"
         "GET  /healthz          살아있는지 확인\n"
-        "GET|POST /run?token=... 파이프라인 실행을 요청한다(브라우저로 링크만 눌러도 됨).\n"
-        "                       바로 결과 확인 페이지로 넘어가고, 1~2분 뒤 자동으로 결과가 뜬다.\n"
+        "GET  /run?token=...    실행 버튼이 있는 화면으로 이동(브라우저로 링크만 눌러도 됨)\n"
         "                       ?hours=6 으로 수집 시간 창을 줄일 수 있다(기본 24)\n"
         "                       ?publish=1 을 붙이면 디스코드로 실제 발행한다(기본은 dry-run)\n"
     )
@@ -60,7 +66,16 @@ async def _run_job(job_id: str, hours: int, publish: int) -> None:
             "log": result["log"],
             "picked_count": len(result["picked"]),
             "verified_count": len(result["verified"]),
-            "verified_headlines": [a["headline"] for a in result["verified"]],
+            "articles": [
+                {
+                    "headline": a.get("headline", ""),
+                    "summary": a.get("summary", ""),
+                    "insight": a.get("insight", ""),
+                    "source": a.get("source", ""),
+                    "url": a.get("url", ""),
+                }
+                for a in result["verified"]
+            ],
             "dry_run": not bool(publish),
         }
     except Exception as exc:
@@ -68,11 +83,34 @@ async def _run_job(job_id: str, hours: int, publish: int) -> None:
         JOBS[job_id]["error"] = str(exc)
 
 
-@app.api_route("/run", methods=["GET", "POST"])
-async def run_pipeline(
+@app.get("/run", response_class=HTMLResponse)
+async def run_landing(
     token: str = Query(...),
     hours: int = Query(24, ge=1, le=168),
     publish: int = Query(0),
+):
+    _check_token(token)
+    return (
+        f"{PAGE_HEAD}<body style='{BODY_STYLE}'>"
+        "<h2>증시 뉴스 다이제스트 에이전트</h2>"
+        f"<p>최근 {hours}시간 뉴스를 수집해서 5건을 선별하고, 요약·검수까지 실제로 돌려봅니다"
+        f"(1~2분 걸려요). {'실제로 디스코드에 발행까지 합니다.' if publish else 'dry-run이라 실제 발행은 하지 않아요.'}</p>"
+        "<form method='post' action='/run'>"
+        f"<input type='hidden' name='token' value='{token}'>"
+        f"<input type='hidden' name='hours' value='{hours}'>"
+        f"<input type='hidden' name='publish' value='{publish}'>"
+        "<button type='submit' style='font-size:1.2em;padding:14px 28px;background:#2563eb;"
+        "color:#fff;border:none;border-radius:8px;cursor:pointer'>실행하기</button>"
+        "</form>"
+        "</body></html>"
+    )
+
+
+@app.post("/run")
+async def run_pipeline(
+    token: str = Form(...),
+    hours: int = Form(24),
+    publish: int = Form(0),
 ):
     _check_token(token)
 
@@ -92,8 +130,8 @@ async def status(job_id: str, token: str = Query(...)):
 
     if job["status"] in ("queued", "running"):
         return (
-            "<html><head><meta charset='utf-8'><meta http-equiv='refresh' content='5'></head>"
-            "<body style='font-family:sans-serif'>"
+            f"{PAGE_HEAD}<meta http-equiv='refresh' content='5'>"
+            f"<body style='{BODY_STYLE}'>"
             "<h3>실행 중입니다... (보통 1~2분 걸려요)</h3>"
             "<p>이 페이지는 5초마다 자동으로 새로고침돼요. 그냥 기다리시면 됩니다.</p>"
             f"<p style='color:#888'>상태: {job['status']}</p>"
@@ -102,22 +140,35 @@ async def status(job_id: str, token: str = Query(...)):
 
     if job["status"] == "error":
         return (
-            "<html><head><meta charset='utf-8'></head><body style='font-family:sans-serif'>"
+            f"{PAGE_HEAD}<body style='{BODY_STYLE}'>"
             "<h3>실행 중 오류가 발생했어요</h3>"
-            f"<pre>{job['error']}</pre>"
+            f"<pre style='white-space:pre-wrap'>{job['error']}</pre>"
             "</body></html>"
         )
 
     r = job["result"]
-    headlines = "".join(f"<li>{h}</li>" for h in r["verified_headlines"]) or "<li>(없음)</li>"
+    if r["articles"]:
+        cards = "".join(
+            "<div style='border:1px solid #ddd;border-radius:8px;padding:16px;margin:12px 0'>"
+            f"<h4 style='margin:0 0 8px'>{a['headline']}</h4>"
+            f"<p style='margin:0 0 8px'>{a['summary']}</p>"
+            + (f"<p style='color:#2563eb;margin:0 0 8px'>💡 {a['insight']}</p>" if a["insight"] else "")
+            + f"<p style='color:#888;font-size:0.85em;margin:0'>출처: {a['source']}"
+            + (f" · <a href='{a['url']}' target='_blank'>원문</a>" if a["url"] else "")
+            + "</p></div>"
+            for a in r["articles"]
+        )
+    else:
+        cards = "<p>검수를 통과한 기사가 없었어요.</p>"
     log = "<br>".join(r["log"])
     return (
-        "<html><head><meta charset='utf-8'></head><body style='font-family:sans-serif'>"
-        "<h3>실행 완료</h3>"
+        f"{PAGE_HEAD}<body style='{BODY_STYLE}'>"
+        "<h2>실행 완료</h2>"
         f"<p>선별 {r['picked_count']}건 → 검수 통과 {r['verified_count']}건</p>"
-        f"<ul>{headlines}</ul>"
+        f"{cards}"
         f"<p>{'실제 디스코드에 발행함' if not r['dry_run'] else 'dry-run (실제 발행 안 함)'}</p>"
-        f"<hr><p style='color:#666;font-size:0.9em'>{log}</p>"
+        "<details style='margin-top:16px'><summary style='cursor:pointer;color:#666'>실행 로그 보기</summary>"
+        f"<p style='color:#666;font-size:0.9em'>{log}</p></details>"
         "</body></html>"
     )
 

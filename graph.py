@@ -23,7 +23,6 @@ import trafilatura
 import yaml
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, TextBlock, query
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Send
 
 BASE_DIR = Path(__file__).resolve().parent
 UA = {"User-Agent": "Mozilla/5.0 (my-newsletter-agent)"}
@@ -273,12 +272,17 @@ async def report_one(payload: dict) -> dict:
     return {"drafted": [draft], "log": [f"   취재 완료: {parsed.get('headline', '')}"]}
 
 
-def fanout_to_report(state: dict):
-    if not state["picked"]:
-        # 고른 기사가 0건이면 report_one_node로 팬아웃할 게 없다 — 그래도 검수·발행
-        # 단계는 돌아야 "오늘은 조용합니다" 카드가 나간다.
-        return "verify"
-    return [Send("report_one_node", {"item": item}) for item in state["picked"]]
+async def report_all(state: dict) -> dict:
+    """picked 기사를 하나씩 순서대로 취재한다(2026-09-16, 기존엔 Send로 동시에
+    돌렸는데, 기사마다 claude CLI 서브프로세스가 하나씩 떠서 5건을 동시에 돌리면
+    Render 무료 인스턴스(512MB)가 메모리 부족으로 통째로 죽는 문제가 있었음 —
+    순차 처리로 바꿔서 항상 서브프로세스 1개만 뜨게 함)."""
+    drafted, log = [], []
+    for item in state["picked"]:
+        result = await report_one({"item": item})
+        drafted.extend(result["drafted"])
+        log.extend(result["log"])
+    return {"drafted": drafted, "log": log}
 
 
 # ---------- ④ 검수 ----------
@@ -403,14 +407,14 @@ def build():
     g = StateGraph(NewsletterState)
     g.add_node("collect", collect)
     g.add_node("select", select)
-    g.add_node("report_one_node", report_one)
+    g.add_node("report_all", report_all)
     g.add_node("verify", verify)
     g.add_node("publish", publish)
 
     g.add_edge(START, "collect")
     g.add_edge("collect", "select")
-    g.add_conditional_edges("select", fanout_to_report, ["report_one_node", "verify"])
-    g.add_edge("report_one_node", "verify")
+    g.add_edge("select", "report_all")
+    g.add_edge("report_all", "verify")
     g.add_edge("verify", "publish")
     g.add_edge("publish", END)
     return g
