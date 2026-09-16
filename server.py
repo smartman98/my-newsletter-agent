@@ -94,7 +94,7 @@ async def run_landing(
         f"{PAGE_HEAD}<body style='{BODY_STYLE}'>"
         "<h2>증시 뉴스 다이제스트 에이전트</h2>"
         f"<p>최근 {hours}시간 뉴스를 수집해서 5건을 선별하고, 요약·검수까지 실제로 돌려봅니다"
-        f"(1~2분 걸려요). {'실제로 디스코드에 발행까지 합니다.' if publish else 'dry-run이라 실제 발행은 하지 않아요.'}</p>"
+        f"(3~6분 정도 걸려요). {'실제로 디스코드에 발행까지 합니다.' if publish else 'dry-run이라 실제 발행은 하지 않아요.'}</p>"
         "<form method='post' action='/run'>"
         f"<input type='hidden' name='token' value='{token}'>"
         f"<input type='hidden' name='hours' value='{hours}'>"
@@ -132,7 +132,7 @@ async def status(job_id: str, token: str = Query(...)):
         return (
             f"{PAGE_HEAD}<meta http-equiv='refresh' content='5'>"
             f"<body style='{BODY_STYLE}'>"
-            "<h3>실행 중입니다... (보통 1~2분 걸려요)</h3>"
+            "<h3>실행 중입니다... (기사를 하나씩 순서대로 처리해서 3~6분 정도 걸려요)</h3>"
             "<p>이 페이지는 5초마다 자동으로 새로고침돼요. 그냥 기다리시면 됩니다.</p>"
             f"<p style='color:#888'>상태: {job['status']}</p>"
             "</body></html>"
