@@ -21,6 +21,7 @@ import uuid
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, Form, HTTPException, Query
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
@@ -188,12 +189,39 @@ async def status(job_id: str, token: str = Query(...)):
 # 뉴스레터와 같은 구조를 쓴다 — 버튼을 누르면 백그라운드로 돌리고 상태 페이지가
 # 자동 새로고침한다. 한 건에 10~40초쯤 걸려서 그냥 기다리면 Render가 연결을 끊는다.
 
+# 평가셋(data/goldenset.json 의 split=="eval") 18건 그대로 — REPORT.md 의
+# 1.000 / 100% / 100% 이 바로 이 문항들로 잰 값이라, 화면에서 직접 확인할 수 있게 둔다.
 EXAMPLES = [
-    "몇 시까지 가면 지각 아닌가요?",
-    "어제 아파서 병원에 갔는데 공가 되나요? 며칠까지 인정돼요?",
-    "22일 출석했으면 장려금 얼마 받아요?",
-    "결석 몇 번 하면 제적되나요?",
-    "제가 지금까지 몇 번 결석했는지 알려주세요.",
+    ("출결", [
+        "몇 시까지 들어와야 지각이 아닌가요?",
+        "오후에 잠깐 자리를 비워야 하는데 얼마나 비우면 외출 처리해야 하나요?",
+        "퇴실 체크를 깜빡했는데 그날 출석은 인정되나요?",
+    ]),
+    ("공가·휴가", [
+        "아이가 아파서 병원 데려갔는데 공가 되나요? 며칠까지 인정돼요?",
+        "병원 영수증 내면 공가 처리되나요?",
+        "어제 일이 있어서 못 나갔는데 공가 신청은 언제까지 해야 하나요?",
+    ]),
+    ("장려금·고용형태", [
+        "훈련장려금은 하루에 얼마씩 계산되나요?",
+        "이번 단위기간에 22일 출석했으면 장려금이 얼마예요?",
+        "훈련 중에 주말 알바 하려는데 괜찮을까요?",
+    ]),
+    ("제적·참여규칙", [
+        "결석이 몇 번 쌓이면 제적되나요?",
+        "카페에서 QR 찍어도 되나요?",
+        "경고 한 번 받으면 바로 제적인가요?",
+    ]),
+    ("과정 운영", [
+        "수료랑 졸업 기준이 어떻게 다른가요?",
+        "도메인 개발하기는 뭘 관리하는 건가요?",
+        "지금이 몇 번째 단위기간이에요? 오늘 기준으로요.",
+    ]),
+    ("응대 범위 밖 (넘겨야 정답)", [
+        "제가 지금까지 몇 번 결석했나요?",
+        "수료하면 취업 알선도 해주나요?",
+        "LangGraph에서 조건부 엣지는 어떻게 쓰나요?",
+    ]),
 ]
 
 CAT_KO = {
@@ -237,10 +265,14 @@ async def bot_landing(token: str = Query(...), q: str = Query("")):
             "</body></html>"
         )
     chips = "".join(
-        f"<a href='/bot?token={escape(token)}&q={escape(ex)}' "
-        "style='display:inline-block;margin:4px 6px 4px 0;padding:6px 10px;border:1px solid #ccc;"
-        f"border-radius:14px;font-size:0.85em;color:#333;text-decoration:none'>{escape(ex)}</a>"
-        for ex in EXAMPLES
+        f"<div style='margin:10px 0 4px;color:#666;font-size:0.8em'>{escape(group)}</div>"
+        + "".join(
+            f"<a href='/bot?token={escape(token)}&q={quote(ex)}' "
+            "style='display:inline-block;margin:3px 6px 3px 0;padding:6px 10px;border:1px solid #ccc;"
+            f"border-radius:14px;font-size:0.85em;color:#333;text-decoration:none'>{escape(ex)}</a>"
+            for ex in items
+        )
+        for group, items in EXAMPLES
     )
     return (
         f"{PAGE_HEAD}<body style='{BODY_STYLE}'>"
@@ -248,7 +280,10 @@ async def bot_landing(token: str = Query(...), q: str = Query("")):
         "<p>‘AI 에이전트 서비스 개발자 과정’ 공식 공지를 근거 문서로 삼아, 문의를 6개 카테고리로 "
         "나누고 필요한 장(章)만 골라 답합니다. 근거에 없는 내용은 답하지 않고 운영 매니저에게 "
         "넘깁니다. 한 건에 <b>10~40초</b>쯤 걸려요.</p>"
-        f"<p style='margin-bottom:4px;color:#666;font-size:0.9em'>예시 질문(눌러서 채우기)</p>{chips}"
+        "<p style='margin-bottom:0;color:#666;font-size:0.9em'>평가셋 18문항 — 눌러서 채우기"
+        "<br><span style='font-size:0.85em'>REPORT.md의 분류 1.000 · 도구 호출 100% · 답변 100%가 "
+        "바로 이 18문항으로 잰 값입니다.</span></p>"
+        f"{chips}"
         "<form method='post' action='/bot' style='margin-top:16px'>"
         f"<input type='hidden' name='token' value='{escape(token)}'>"
         "<textarea name='question' rows='3' required placeholder='궁금한 것을 한 줄로 적어 주세요' "
