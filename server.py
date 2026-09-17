@@ -237,7 +237,7 @@ def _openai_ready() -> bool:
 # 데모 주소를 저장소(공개)에 적어 두면 토큰도 같이 공개된다. 토큰은 "링크에 붙는 열쇠"일 뿐
 # 로그인이 아니라서, 하루 호출 상한을 따로 둔다 — 누가 반복해서 눌러도 요금이 정해진 만큼만
 # 나가게 하려는 것이다. BOT_DAILY_LIMIT 환경변수로 조절한다(0이면 끔).
-BOT_DAILY_LIMIT = int(os.environ.get("BOT_DAILY_LIMIT", "80"))
+BOT_DAILY_LIMIT = int(os.environ.get("BOT_DAILY_LIMIT", "30"))
 _bot_usage = {"date": "", "count": 0}
 
 
