@@ -234,6 +234,26 @@ def _openai_ready() -> bool:
     return bool(os.environ.get("OPENAI_API_KEY"))
 
 
+# 데모 주소를 저장소(공개)에 적어 두면 토큰도 같이 공개된다. 토큰은 "링크에 붙는 열쇠"일 뿐
+# 로그인이 아니라서, 하루 호출 상한을 따로 둔다 — 누가 반복해서 눌러도 요금이 정해진 만큼만
+# 나가게 하려는 것이다. BOT_DAILY_LIMIT 환경변수로 조절한다(0이면 끔).
+BOT_DAILY_LIMIT = int(os.environ.get("BOT_DAILY_LIMIT", "80"))
+_bot_usage = {"date": "", "count": 0}
+
+
+def _take_bot_quota() -> bool:
+    """오늘 몫이 남아 있으면 하나 쓰고 True. 날짜가 바뀌면 자동으로 초기화된다."""
+    if BOT_DAILY_LIMIT <= 0:
+        return True
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if _bot_usage["date"] != today:
+        _bot_usage.update(date=today, count=0)
+    if _bot_usage["count"] >= BOT_DAILY_LIMIT:
+        return False
+    _bot_usage["count"] += 1
+    return True
+
+
 def _ask_sync(question: str) -> dict:
     """무거운 import는 여기서 한다 — 키가 없어도 서버는 뜨게 하려고."""
     import agent  # trainbot/agent.py
@@ -294,7 +314,10 @@ async def bot_landing(token: str = Query(...), q: str = Query("")):
         "</form>"
         "<p style='margin-top:24px;color:#888;font-size:0.85em'>"
         "소스·평가 결과: <a href='https://github.com/smartman98/my-routing-agent' target='_blank'>"
-        "github.com/smartman98/my-routing-agent</a></p>"
+        "github.com/smartman98/my-routing-agent</a>"
+        + (f"<br>체험용이라 하루 {BOT_DAILY_LIMIT}건까지만 돌아갑니다"
+           f"(오늘 {_bot_usage['count']}건 사용)." if BOT_DAILY_LIMIT > 0 else "")
+        + "</p>"
         "</body></html>"
     )
 
@@ -302,6 +325,10 @@ async def bot_landing(token: str = Query(...), q: str = Query("")):
 @app.post("/bot")
 async def bot_ask(token: str = Form(...), question: str = Form(...)):
     _check_token(token)
+    if not _take_bot_quota():
+        raise HTTPException(
+            429, f"오늘 체험 가능한 질문 수({BOT_DAILY_LIMIT}건)를 다 썼어요. "
+                 "내일 다시 시도해 주세요.")
     job_id = uuid.uuid4().hex[:12]
     JOBS[job_id] = {"status": "queued", "question": question,
                     "started_at": datetime.now(timezone.utc).isoformat()}
