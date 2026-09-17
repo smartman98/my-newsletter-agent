@@ -16,13 +16,21 @@
 
 import asyncio
 import os
+import sys
 import uuid
 from datetime import datetime, timezone
+from html import escape
+from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Query
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
 from graph import build
+
+# 훈련생 문의 응대 봇(my-routing-agent)을 같은 서버에 얹는다(2026-09-17 사용자 요청).
+# 그쪽 모듈들은 서로를 최상위 이름(`from config import ...`)으로 부르도록 짜여 있어서,
+# 패키지로 감싸지 않고 폴더 자체를 import 경로에 추가한다.
+sys.path.insert(0, str(Path(__file__).parent / "trainbot"))
 
 app = FastAPI(title="증시 뉴스 다이제스트 — 피어리뷰용 실행기")
 
@@ -46,6 +54,7 @@ async def index():
         "GET  /run?token=...    실행 버튼이 있는 화면으로 이동(브라우저로 링크만 눌러도 됨)\n"
         "                       ?hours=6 으로 수집 시간 창을 줄일 수 있다(기본 24)\n"
         "                       ?publish=1 을 붙이면 디스코드로 실제 발행한다(기본은 dry-run)\n"
+        "GET  /bot?token=...    훈련생 문의 응대 봇에게 질문해 보기\n"
     )
 
 
@@ -170,6 +179,173 @@ async def status(job_id: str, token: str = Query(...)):
         "<details style='margin-top:16px'><summary style='cursor:pointer;color:#666'>실행 로그 보기</summary>"
         f"<p style='color:#666;font-size:0.9em'>{log}</p></details>"
         "</body></html>"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 훈련생 문의 응대 봇 (my-routing-agent)
+# ---------------------------------------------------------------------------
+# 뉴스레터와 같은 구조를 쓴다 — 버튼을 누르면 백그라운드로 돌리고 상태 페이지가
+# 자동 새로고침한다. 한 건에 10~40초쯤 걸려서 그냥 기다리면 Render가 연결을 끊는다.
+
+EXAMPLES = [
+    "몇 시까지 가면 지각 아닌가요?",
+    "어제 아파서 병원에 갔는데 공가 되나요? 며칠까지 인정돼요?",
+    "22일 출석했으면 장려금 얼마 받아요?",
+    "결석 몇 번 하면 제적되나요?",
+    "제가 지금까지 몇 번 결석했는지 알려주세요.",
+]
+
+CAT_KO = {
+    "ATTENDANCE": "출결", "LEAVE": "공가·휴가", "ALLOWANCE": "장려금·고용형태",
+    "CONDUCT": "제적·참여규칙", "PROGRAM": "과정 운영", "OTHER": "응대 범위 밖",
+}
+
+
+def _openai_ready() -> bool:
+    return bool(os.environ.get("OPENAI_API_KEY"))
+
+
+def _ask_sync(question: str) -> dict:
+    """무거운 import는 여기서 한다 — 키가 없어도 서버는 뜨게 하려고."""
+    import agent  # trainbot/agent.py
+
+    return agent.ask(question)
+
+
+async def _run_bot_job(job_id: str, question: str) -> None:
+    JOBS[job_id]["status"] = "running"
+    try:
+        JOBS[job_id]["result"] = await asyncio.to_thread(_ask_sync, question)
+        JOBS[job_id]["status"] = "done"
+    except Exception as exc:
+        JOBS[job_id]["status"] = "error"
+        JOBS[job_id]["error"] = f"{type(exc).__name__}: {exc}"
+
+
+@app.get("/bot", response_class=HTMLResponse)
+async def bot_landing(token: str = Query(...), q: str = Query("")):
+    _check_token(token)
+    if not _openai_ready():
+        return (
+            f"{PAGE_HEAD}<body style='{BODY_STYLE}'>"
+            "<h2>훈련생 문의 응대 봇</h2>"
+            "<p>이 봇은 OpenAI 모델(gpt-4o · gpt-6-astra)로 돌아갑니다. "
+            "서버에 <code>OPENAI_API_KEY</code>가 아직 설정되지 않아 실행할 수 없어요.</p>"
+            "<p style='color:#666'>Render 대시보드 → 이 서비스 → Environment → "
+            "<code>OPENAI_API_KEY</code> 추가 후 저장하면 바로 동작합니다.</p>"
+            "</body></html>"
+        )
+    chips = "".join(
+        f"<a href='/bot?token={escape(token)}&q={escape(ex)}' "
+        "style='display:inline-block;margin:4px 6px 4px 0;padding:6px 10px;border:1px solid #ccc;"
+        f"border-radius:14px;font-size:0.85em;color:#333;text-decoration:none'>{escape(ex)}</a>"
+        for ex in EXAMPLES
+    )
+    return (
+        f"{PAGE_HEAD}<body style='{BODY_STYLE}'>"
+        "<h2>훈련생 문의 응대 봇</h2>"
+        "<p>‘AI 에이전트 서비스 개발자 과정’ 공식 공지를 근거 문서로 삼아, 문의를 6개 카테고리로 "
+        "나누고 필요한 장(章)만 골라 답합니다. 근거에 없는 내용은 답하지 않고 운영 매니저에게 "
+        "넘깁니다. 한 건에 <b>10~40초</b>쯤 걸려요.</p>"
+        f"<p style='margin-bottom:4px;color:#666;font-size:0.9em'>예시 질문(눌러서 채우기)</p>{chips}"
+        "<form method='post' action='/bot' style='margin-top:16px'>"
+        f"<input type='hidden' name='token' value='{escape(token)}'>"
+        "<textarea name='question' rows='3' required placeholder='궁금한 것을 한 줄로 적어 주세요' "
+        "style='width:100%;padding:10px;font-size:1em;font-family:inherit;border:1px solid #ccc;"
+        f"border-radius:8px;box-sizing:border-box'>{escape(q)}</textarea>"
+        "<button type='submit' style='margin-top:10px;font-size:1.1em;padding:12px 26px;"
+        "background:#2563eb;color:#fff;border:none;border-radius:8px;cursor:pointer'>물어보기</button>"
+        "</form>"
+        "<p style='margin-top:24px;color:#888;font-size:0.85em'>"
+        "소스·평가 결과: <a href='https://github.com/smartman98/my-routing-agent' target='_blank'>"
+        "github.com/smartman98/my-routing-agent</a></p>"
+        "</body></html>"
+    )
+
+
+@app.post("/bot")
+async def bot_ask(token: str = Form(...), question: str = Form(...)):
+    _check_token(token)
+    job_id = uuid.uuid4().hex[:12]
+    JOBS[job_id] = {"status": "queued", "question": question,
+                    "started_at": datetime.now(timezone.utc).isoformat()}
+    asyncio.create_task(_run_bot_job(job_id, question))
+    return RedirectResponse(url=f"/bot/status/{job_id}?token={token}", status_code=303)
+
+
+def _fmt_answer(text: str) -> str:
+    """모델이 **굵게**나 [링크](url)를 섞어 쓴다 — 이스케이프한 뒤 그것만 되살린다."""
+    import re as _re
+
+    html = escape(text)
+    html = _re.sub(r"\[([^\]]+)\]\((https?://[^\s)]+)\)",
+                   r"<a href='\2' target='_blank'>\1</a>", html)
+    html = _re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", html)
+    return html.replace("\n", "<br>")
+
+
+def _panel(title: str, body: str) -> str:
+    return (
+        "<div style='border:1px solid #e5e5e5;border-radius:8px;padding:12px 14px;margin:10px 0'>"
+        f"<div style='color:#666;font-size:0.8em;margin-bottom:6px'>{title}</div>{body}</div>"
+    )
+
+
+@app.get("/bot/status/{job_id}", response_class=HTMLResponse)
+async def bot_status(job_id: str, token: str = Query(...)):
+    _check_token(token)
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "존재하지 않는 작업입니다(서버가 재시작됐을 수도 있어요).")
+
+    back = f"<p style='margin-top:20px'><a href='/bot?token={escape(token)}'>← 다른 질문 하기</a></p>"
+    asked = _panel("문의", f"<b>{escape(job['question'])}</b>")
+
+    if job["status"] in ("queued", "running"):
+        return (
+            f"{PAGE_HEAD}<meta http-equiv='refresh' content='3'>"
+            f"<body style='{BODY_STYLE}'>{asked}"
+            "<h3>답변을 만들고 있어요...</h3>"
+            "<p>분류 → 근거 조립 → 도구 조회 → 답변 → 검증 순서로 돕니다. 3초마다 자동 새로고침돼요.</p>"
+            f"</body></html>"
+        )
+
+    if job["status"] == "error":
+        return (
+            f"{PAGE_HEAD}<body style='{BODY_STYLE}'>{asked}"
+            "<h3>오류가 났어요</h3>"
+            f"<pre style='white-space:pre-wrap;color:#b91c1c'>{escape(job['error'])}</pre>"
+            f"{back}</body></html>"
+        )
+
+    r = job["result"]
+    cat = r.get("category", "")
+    conf = r.get("confidence", 0.0)
+    ver = r.get("verification") or {}
+    tools = r.get("tools_called") or []
+    secs = r.get("sections_used") or []
+
+    if ver.get("ok"):
+        ver_html = "<span style='color:#15803d'>✅ 통과 — 근거 없는 숫자·단정 표현 없음</span>"
+    elif ver:
+        detail = "; ".join(escape(v["detail"]) for v in ver.get("violations", []))
+        ver_html = f"<span style='color:#b45309'>⚠ {detail}</span>"
+    else:
+        ver_html = "<span style='color:#888'>검증 단계를 거치지 않음(범위 밖·이관)</span>"
+
+    return (
+        f"{PAGE_HEAD}<body style='{BODY_STYLE}'>{asked}"
+        + _panel("답변", f"<div style='font-size:1.05em'>{_fmt_answer(r.get('answer', ''))}</div>")
+        + _panel("① 분류", f"<b>{CAT_KO.get(cat, cat)}</b> ({escape(cat)}) · 확신도 {conf:.2f}"
+                          f"<div style='color:#666;font-size:0.9em;margin-top:4px'>"
+                          f"{escape(r.get('reason', ''))}</div>")
+        + _panel("② 사용한 근거 문서", ", ".join(f"{s}장" for s in secs) if secs else "없음")
+        + _panel("③ 호출한 조회 도구", ", ".join(f"<code>{escape(t)}</code>" for t in tools)
+                 if tools else "없음 (근거 문서만으로 답할 수 있는 문의)")
+        + _panel("④ 검증", ver_html)
+        + back
+        + "</body></html>"
     )
 
 

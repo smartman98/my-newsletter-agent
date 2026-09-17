@@ -7,3 +7,7 @@ anyio
 claude-agent-sdk
 fastapi
 uvicorn
+langchain
+langchain-openai
+python-dotenv
+pydantic
